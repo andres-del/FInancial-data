@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@latest"></script>
+
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f7f7f7; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; background-color: white; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); }
+        .header { padding: 10px; border-bottom: 1px solid #ddd; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; justify-content: center; }
+        input[type="text"] { padding: 10px; width: 300px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .timeframe-buttons { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
+        .chart-container { padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .chart { height: 400px; width: 100%; }
+        .loading-indicator { text-align: center; display: none; }
+        .indicators { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 20px; }
+        .indicator-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; text-align: center; }
+        .error { color: red; font-size: 0.8em; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Financial Dashboard</h1>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="symbolInput" placeholder="Enter symbol (e.g., AAPL, BTC/USD)" value="AAPL">
+            <button onclick="loadData()">Search</button>
+        </div>
+
+        <div id="loading-indicator" class="loading-indicator">Loading...</div>
+
+        <div class="timeframe-buttons">
+            <button onclick="changeTimeframe('1week')">1 Week</button>
+            <button onclick="changeTimeframe('1month')">1 Month</button>
+            <button onclick="changeTimeframe('3month')">3 Months</button>
+            <button onclick="changeTimeframe('1year')">1 Year</button>
+            <button onclick="changeTimeframe('5year')">5 Years</button>
+            <button onclick="changeTimeframe('MAX')">MAX</button>
+        </div>
+
+        <div class="chart-container">
+            <div class="chart-title">Price Chart</div>
+            <canvas id="chartCanvas" class="chart"></canvas>
+        </div>
+
+        <div id="indicators" class="indicators"></div>
+    </div>
+
+    <script>
+        let currentSymbol = 'AAPL', currentTimeframe = '1month';
+        const API_KEY = '0667cdfb39de4e96a5d8da854ca5e0a9';
+
+        async function loadData() {
+            try {
+                showLoading(true);
+                currentSymbol = document.getElementById('symbolInput').value.trim() || currentSymbol;
+                
+                const [chartData, sma, rsi, macd, bbands] = await Promise.all([
+                    fetchChartData(),
+                    fetchIndicator('sma'),
+                    fetchIndicator('rsi'),
+                    fetchIndicator('macd'),
+                    fetchIndicator('bbands')
+                ]);
+
+                if (!chartData.length) throw new Error('No historical price data available');
+                renderChart(chartData);
+                renderIndicators({ sma, rsi, macd, bbands });
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        async function fetchChartData() {
+            const response = await fetch(
+                `https://api.twelvedata.com/time_series?symbol=${currentSymbol}&interval=1day&apikey=${API_KEY}&outputsize=5000`
+            );
+            
+            if (!response.ok) throw new Error('Failed to fetch price data');
+            const data = await response.json();
+            
+            if (data.status === 'error') throw new Error(data.message || 'Invalid symbol');
+            if (!data.values?.length) throw new Error('No historical data found');
+
+            const timeSeries = data.values.reverse();
+            const dataPoints = getDataPointsCount();
+            
+            return timeSeries
+                .slice(-dataPoints)
+                .map(item => ({
+                    x: item.datetime,
+                    y: parseNumber(item.close)
+                }));
+        }
+
+        async function fetchIndicator(indicator) {
+            const endpoints = {
+                sma: { 
+                    url: 'sma',
+                    params: { time_period: 50, series_type: 'close' },
+                    key: 'sma'
+                },
+                rsi: {
+                    url: 'rsi',
+                    params: { time_period: 14, series_type: 'close' },
+                    key: 'rsi'
+                },
+                macd: {
+                    url: 'macd',
+                    params: { 
+                        fast_period: 12,
+                        slow_period: 26,
+                        signal_period: 9,
+                        series_type: 'close'
+                    },
+                    keys: ['macd', 'signal', 'histogram']
+                },
+                bbands: {
+                    url: 'bbands',
+                    params: { time_period: 20, sd: 2, series_type: 'close' },
+                    keys: ['upper_band', 'middle_band', 'lower_band']
+                }
+            };
+
+            const config = endpoints[indicator];
+            const query = new URLSearchParams({
+                symbol: currentSymbol,
+                interval: '1day',
+                apikey: API_KEY,
+                ...config.params
+            });
+
+            try {
+                const response = await fetch(`https://api.twelvedata.com/${config.url}?${query}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                if (data.status === 'error') throw new Error(data.message);
+
+                return this.processIndicatorData(config, data);
+
+            } catch (error) {
+                console.error(`${indicator.toUpperCase()} Error:`, error.message);
+                return { error: error.message };
+            }
+        }
+
+        function processIndicatorData(config, data) {
+            const result = {};
+            
+            if (config.keys) {
+                config.keys.forEach(key => {
+                    result[key] = parseNumber(data.values?.[0]?.[key]);
+                });
+            } else {
+                result.value = parseNumber(data.values?.[0]?.[config.key]);
+            }
+            
+            return result;
+        }
+
+        function parseNumber(value) {
+            const num = parseFloat(value);
+            return isNaN(num) ? null : num;
+        }
+
+        function renderChart(data) {
+            const ctx = document.getElementById('chartCanvas').getContext('2d');
+            
+            if (window.myChart) window.myChart.destroy();
+
+            window.myChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => d.x),
+                    datasets: [{
+                        label: `${currentSymbol} Price`,
+                        data: data.map(d => d.y),
+                        borderColor: '#4bc0c0',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        tension: 0.1,
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { 
+                                unit: 'day', 
+                                tooltipFormat: 'MMM D, YYYY',
+                                displayFormats: { day: 'MMM D' }
+                            }
+                        },
+                        y: { 
+                            title: { 
+                                display: true, 
+                                text: 'Price (USD)',
+                                padding: 10
+                            } 
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                label: (context) => {
+                                    const value = context.parsed.y;
+                                    return `$${value?.toFixed(2) || 'N/A'}`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderIndicators({ sma, rsi, macd, bbands }) {
+            document.getElementById('indicators').innerHTML = `
+                <div class="indicator-box">
+                    <h3>SMA (50)</h3>
+                    <p>${formatValue(sma?.value)}</p>
+                    ${sma?.error ? `<div class="error">${sma.error}</div>` : ''}
+                </div>
+                <div class="indicator-box">
+                    <h3>RSI (14)</h3>
+                    <p>${formatValue(rsi?.value)}</p>
+                    ${rsi?.error ? `<div class="error">${rsi.error}</div>` : ''}
+                </div>
+                <div class="indicator-box">
+                    <h3>MACD</h3>
+                    ${formatMACD(macd)}
+                    ${macd?.error ? `<div class="error">${macd.error}</div>` : ''}
+                </div>
+                <div class="indicator-box">
+                    <h3>Bollinger Bands</h3>
+                    ${formatBBands(bbands)}
+                    ${bbands?.error ? `<div class="error">${bbands.error}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function formatValue(value) {
+            return (value !== null && typeof value === 'number') ? value.toFixed(2) : 'N/A';
+        }
+
+        function formatMACD(macd) {
+            if (!macd || macd.error) return '<p>N/A</p>';
+            return `
+                <p>MACD: ${formatValue(macd.macd)}</p>
+                <p>Signal: ${formatValue(macd.signal)}</p>
+                <p>Hist: ${formatValue(macd.histogram)}</p>
+            `;
+        }
+
+        function formatBBands(bbands) {
+            if (!bbands || bbands.error) return '<p>N/A</p>';
+            return `
+                <p>Upper: ${formatValue(bbands.upper_band)}</p>
+                <p>Middle: ${formatValue(bbands.middle_band)}</p>
+                <p>Lower: ${formatValue(bbands.lower_band)}</p>
+            `;
+        }
+
+        function getDataPointsCount() {
+            const counts = {
+                '1week': 7,
+                '1month': 21,
+                '3month': 63,
+                '1year': 252,
+                '5year': 1260,
+                'MAX': 5000
+            };
+            return counts[currentTimeframe] || 21;
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading-indicator').style.display = show ? 'block' : 'none';
+        }
+
+        function showError(message) {
+            alert(`Error: ${message}`);
+        }
+
+        function changeTimeframe(timeframe) {
+            currentTimeframe = timeframe;
+            loadData();
+        }
+
+        // Initial load
+        loadData();
+    </script>
+</body>
+</html>
