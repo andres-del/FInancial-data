@@ -57,7 +57,7 @@
 
     <script>
         let currentSymbol = 'AAPL', currentTimeframe = '1month';
-        const API_KEYS = [
+        let API_KEYS = [ // Changed from const to let
             '0667cdfb39de4e96a5d8da854ca5e0a9',
             'aa9b4b19d7f24062a3c4abac23404e16',
             '29c3b6008b8447e0a2c00abc5dfeb910'
@@ -80,7 +80,18 @@
                 renderChart(chartData);
                 renderIndicators({ sma, rsi, macd, bbands });
             } catch (error) {
-                showError(error.message);
+                if (error.message.startsWith('All API keys failed')) {
+                    const userKey = prompt(`${error.message}\n\nPlease enter your own Twelve Data API key (you can get a free one at: https://twelvedata.com/apikey):`);
+                    if (userKey) {
+                        API_KEYS.push(userKey.trim());
+                        loadData(); // Retry with new key
+                        return;
+                    } else {
+                        showError('No API key provided. Please refresh the page to try again.');
+                    }
+                } else {
+                    showError(error.message);
+                }
             } finally {
                 showLoading(false);
             }
@@ -112,6 +123,7 @@
             throw new Error(`All API keys failed: ${lastError?.message}`);
         }
 
+        // Rest of the code remains exactly the same below this point
         async function fetchChartData() {
             const data = await fetchWithRetry('time_series', {
                 symbol: currentSymbol,
